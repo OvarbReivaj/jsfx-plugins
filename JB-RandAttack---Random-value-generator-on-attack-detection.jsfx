@@ -1,0 +1,181 @@
+desc:JB RandAttack - Random value generator on attack detection
+author:JB
+version:1.0
+about:
+  # JB RandAttack
+  Detects audio attacks (transients) and generates random MIDI-like values.
+  
+  ## Controls:
+  * **Random Output Value** - Current generated value (read-only)
+  * **Min/Max Value** - Range for random generation (0-127)
+  * **Threshold** - Level that triggers detection (dB)
+  * **Retrigger Time** - Minimum time between triggers (ms)
+  * **Slope Sensitivity** - Respond to signal slope instead of threshold (0=off)
+  * **Min Slope** - Minimum dB increase per sample to trigger
+  * **Detection Mode** - Threshold only / Slope only / Both AND / Both OR
+  
+  ## Use Cases:
+  - Randomize synth parameters on each drum hit
+  - Generate variations for effects (delay time, filter cutoff)
+  - Create unpredictable rhythmic patterns
+  - Live performance randomness
+
+slider1:0<0,127,1>Random Output Value (ro)
+slider2:0<0,127,1>Min Value
+slider3:127<0,127,1>Max Value
+slider4:-30<-60,0,1>Threshold (dB)
+slider5:50<0,1000,1>Retrigger Time (ms)
+slider6:0<0,1,0.01>Slope Sensitivity (0=off)
+slider7:0<0,10,0.1>Min Slope (dB/sample)
+slider8:0<0,3,1{Threshold only,Slope only,Both AND,Both OR}>Detection Mode
+
+in_pin:none
+out_pin:none
+
+@init
+previous_sample = 0;
+attack_led = 0;
+led_timer = 0;
+samples_since_last_attack = 1000000;
+retrigger_samples = 0;
+prev_db = -120;
+envelope = 0;
+attack_detected = 0;
+
+function dB_to_linear(dB) (
+  10 ^ (dB / 20);
+);
+
+function linear_to_dB(linear) (
+  linear > 0.000001 ? 20 * log10(linear) : -120;
+);
+
+function generate_random(min_val, max_val) (
+  floor(min_val + rand(max_val - min_val) + 0.5);
+);
+
+@slider
+min_val = min(slider2, slider3);
+max_val = max(slider2, slider3);
+threshold_dB = slider4;
+threshold_linear = dB_to_linear(threshold_dB);
+retrigger_ms = slider5;
+retrigger_samples = retrigger_ms * srate / 1000;
+slope_sensitivity = slider6;
+min_slope_db = slider7;
+mode = slider8;
+
+@sample
+input_signal = max(abs(spl0), abs(spl1));
+envelope = max(input_signal, envelope * 0.9995);
+
+current_db = linear_to_dB(envelope);
+slope_db = current_db - prev_db;
+prev_db = current_db;
+
+was_high = (previous_sample >= threshold_linear);
+is_high = (envelope >= threshold_linear);
+threshold_cross = is_high && !was_high;
+
+slope_attack = (slope_db >= min_slope_db) && (envelope > threshold_linear * 0.3);
+
+attack_detected = 0;
+mode == 0 ? attack_detected = threshold_cross;
+mode == 1 ? attack_detected = slope_attack;
+mode == 2 ? attack_detected = (threshold_cross && slope_attack);
+mode == 3 ? attack_detected = (threshold_cross || slope_attack);
+
+(slope_sensitivity > 0 && slope_sensitivity < 1 && mode == 0) ? (
+  attack_detected = threshold_cross ? (1 - slope_sensitivity) : 0;
+  attack_detected = attack_detected + (slope_attack ? slope_sensitivity : 0);
+  attack_detected = attack_detected > 0.5;
+);
+
+can_trigger = (samples_since_last_attack >= retrigger_samples);
+
+attack_detected && can_trigger ? (
+  new_val = generate_random(min_val, max_val);
+  slider1 = new_val;
+  sliderchange(slider1);
+  samples_since_last_attack = 0;
+  attack_led = 1;
+  led_timer = srate * 0.05;
+);
+
+samples_since_last_attack < 10000000 ? samples_since_last_attack += 1;
+
+led_timer > 0 ? (
+  led_timer -= 1;
+) : (
+  attack_led = 0;
+);
+
+previous_sample = envelope;
+
+@gfx 450 160
+gfx_set(0.15, 0.15, 0.2, 1);
+gfx_rect(0, 0, 450, 160);
+
+gfx_set(0.9, 0.8, 0.3, 1);
+gfx_x = 10;
+gfx_y = 8;
+gfx_drawstr("JB RandAttack");
+
+gfx_set(0.6, 0.6, 0.7, 1);
+gfx_x = 120;
+gfx_y = 8;
+gfx_drawstr("| Attack → Random Value");
+
+gfx_set(0.3, 0.3, 0.35, 1);
+gfx_rect(10, 35, 280, 20);
+
+env_for_meter = min(1, envelope);
+env_px = min(280, env_for_meter * 280);
+gfx_set(0, 0.9, 0.4, 1);
+gfx_rect(10, 35, env_px, 20);
+
+threshold_px = 10 + min(280, max(0, threshold_linear * 280));
+gfx_set(1, 0.3, 0.2, 1);
+gfx_line(threshold_px, 33, threshold_px, 57);
+
+gfx_set(1, 0.7, 0.5, 1);
+gfx_x = threshold_px + 3;
+gfx_y = 58;
+threshold_px < 260 ? (
+  gfx_drawstr(sprintf(#, "Th:%.1fdB", threshold_dB));
+);
+
+gfx_set(attack_led ? 1 : 0.2, attack_led ? 0.2 : 0.2, attack_led ? 0.2 : 0.3, 1);
+gfx_circle(320, 45, 12, 1, 1);
+gfx_set(1, 0.6, 0.2, 1);
+gfx_circle(320, 45, 12, 0, 1);
+gfx_set(1, 1, 1, 1);
+gfx_x = 310;
+gfx_y = 62;
+gfx_drawstr("ATTACK");
+
+gfx_set(0.3, 0.8, 1, 1);
+gfx_x = 10;
+gfx_y = 85;
+gfx_drawstr(sprintf(#, "Value: %d  [%d - %d]", slider1, min_val, max_val));
+
+remaining_ms = max(0, (retrigger_samples - samples_since_last_attack) * 1000 / srate);
+remaining_ms > 0 && !attack_detected ? (
+  gfx_set(1, 0.6, 0, 1);
+  gfx_x = 10;
+  gfx_y = 105;
+  gfx_drawstr(sprintf(#, "Blocked: %.0f ms", remaining_ms));
+) : can_trigger ? (
+  gfx_set(0.3, 0.9, 0.3, 1);
+  gfx_x = 10;
+  gfx_y = 105;
+  gfx_drawstr("Ready");
+);
+
+gfx_set(0.5, 0.5, 0.6, 1);
+gfx_x = 380;
+gfx_y = 85;
+mode == 0 ? gfx_drawstr("Mode: Thr");
+mode == 1 ? gfx_drawstr("Mode: Slp");
+mode == 2 ? gfx_drawstr("Mode: AND");
+mode == 3 ? gfx_drawstr("Mode: OR");

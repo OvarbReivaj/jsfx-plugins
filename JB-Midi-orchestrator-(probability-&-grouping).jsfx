@@ -1,0 +1,246 @@
+desc: MIDI Random Groups Distributor
+author: Javier Bravo
+version: 3.4
+about:
+  Distributes notes in random groups across selectable MIDI channels.
+  Never repeats the same channel for consecutive groups.
+
+// --- SLIDERS ---
+slider1:1<1,16,1>First Channel (1-16)
+slider2:3<1,16,1>Number of Channels (1-16)
+slider3:1<1,32,1>Min Group Size
+slider4:3<1,32,1>Max Group Size
+slider5:5000<0,30000,100>Note Timeout (ms, 0=off)
+
+@init
+first_ch = 0;
+num_channels = 3;
+min_group = 1;
+max_group = 3;
+note_timeout = 5000;
+
+// Arrays
+note_map = 0;
+note_timestamp = 200;
+
+// Estado
+current_channel = 0;
+notes_left_in_group = 0;
+total_group_size = 1;
+last_channel = -1;  // Último canal usado (para evitar repetición)
+
+// Limpiar arrays
+i = 0;
+loop(128,
+  note_map[i] = -1;
+  note_timestamp[i] = 0;
+  i += 1;
+);
+
+@slider
+// CANALES
+first_ch = slider1 - 1;
+first_ch < 0 ? first_ch = 0;
+first_ch > 15 ? first_ch = 15;
+
+num_channels = slider2;
+num_channels < 1 ? num_channels = 1;
+num_channels > 16 ? num_channels = 16;
+
+// Asegurar que no excede el canal 16
+max_possible = 16 - first_ch;
+num_channels > max_possible ? num_channels = max_possible;
+num_channels < 1 ? (num_channels = 1; first_ch = 0);
+
+// TAMAÑO DE GRUPO
+min_group = slider3;
+min_group < 1 ? min_group = 1;
+max_group = slider4;
+max_group < min_group ? max_group = min_group;
+max_group > 32 ? max_group = 32;
+
+// TIMEOUT
+note_timeout = slider5;
+
+@block
+// LIMPIAR NOTAS HUÉRFANAS
+note_timeout > 0 ? (
+  current_time = time_precise() * 1000;
+  
+  note_num = 0;
+  loop(128,
+    note_map[note_num] >= 0 ? (
+      elapsed = current_time - note_timestamp[note_num];
+      elapsed > note_timeout ? (
+        midisend(0, $x80 | note_map[note_num], note_num, 0);
+        note_map[note_num] = -1;
+        note_timestamp[note_num] = 0;
+      );
+    );
+    note_num += 1;
+  );
+);
+
+while (midirecv(offset, msg1, msg2, msg3)) (
+  status = msg1 & $xF0;
+  isNoteOn = (status == $x90 && msg3 > 0);
+  isNoteOff = (status == $x80 || (status == $x90 && msg3 == 0));
+  
+  isNoteOn ? (
+    // ¿Necesitamos nuevo grupo?
+    (notes_left_in_group <= 0) ? (
+      // Seleccionar nuevo canal (siempre diferente del último grupo)
+      max_attempts = 10;
+      attempt = 0;
+      channel_selected = 0;
+      
+      loop(max_attempts,
+        random_idx = floor(rand(num_channels));
+        new_channel = first_ch + random_idx;
+        
+        // Verificar que sea diferente del último canal (si hay más de 1 canal disponible)
+        (new_channel != last_channel || num_channels == 1) ? (
+          current_channel = new_channel;
+          channel_selected = 1;
+          attempt = max_attempts; // Salir del bucle
+        );
+        attempt += 1;
+      );
+      
+      // Fallback: si por algún motivo no se pudo seleccionar, usar el primer canal disponible
+      channel_selected == 0 ? current_channel = first_ch;
+      
+      // Guardar para próxima comparación
+      last_channel = current_channel;
+      
+      // Nuevo tamaño de grupo aleatorio
+      group_range = max_group - min_group + 1;
+      total_group_size = floor(rand(group_range)) + min_group;
+      notes_left_in_group = total_group_size;
+    );
+    
+    target_ch = current_channel;
+    notes_left_in_group -= 1;
+    
+    // Guardar para NoteOff
+    note_map[msg2] = target_ch;
+    note_timestamp[msg2] = time_precise() * 1000;
+    
+    // Enviar nota
+    midisend(offset, (status & $xF0) | target_ch, msg2, msg3);
+    
+  ) : isNoteOff ? (
+    target_ch = note_map[msg2];
+    target_ch >= 0 ? (
+      midisend(offset, (status & $xF0) | target_ch, msg2, msg3);
+      note_map[msg2] = -1;
+      note_timestamp[msg2] = 0;
+    );
+  ) : (
+    // Otros mensajes: pasar tal cual
+    midisend(offset, msg1, msg2, msg3);
+  );
+);
+
+@gfx 400 300
+gfx_r=0.08; gfx_g=0.08; gfx_b=0.12; gfx_a=1;
+gfx_rect(0,0,gfx_w,gfx_h);
+
+gfx_r=1; gfx_g=0.8; gfx_b=0.2;
+gfx_x = 10;
+gfx_y = 10;
+gfx_drawstr("MIDI RANDOM GROUPS");
+
+// CONFIGURACIÓN
+gfx_r=0.9; gfx_g=0.9; gfx_b=0.9;
+gfx_x = 10;
+gfx_y = 35;
+gfx_drawstr("First Channel: ");
+gfx_drawnumber(first_ch + 1, 0);
+
+gfx_x = 10;
+gfx_y = 55;
+gfx_drawstr("Number of Channels: ");
+gfx_drawnumber(num_channels, 0);
+
+// Mostrar rango real
+start_ch = first_ch + 1;
+end_ch = first_ch + num_channels;
+gfx_x = 10;
+gfx_y = 75;
+gfx_drawstr("Channel Range: ");
+gfx_drawnumber(start_ch, 0);
+gfx_drawstr(" → ");
+gfx_drawnumber(end_ch, 0);
+
+// Tamaño de grupo
+gfx_x = 10;
+gfx_y = 100;
+gfx_drawstr("Group Size: ");
+gfx_drawnumber(min_group, 0);
+gfx_drawstr(" - ");
+gfx_drawnumber(max_group, 0);
+gfx_drawstr(" notes");
+
+// Indicador de sin repetición
+gfx_r=0.5; gfx_g=0.9; gfx_b=0.5;
+gfx_x = 10;
+gfx_y = 120;
+gfx_drawstr("✓ No consecutive channel repeats");
+
+// Timeout
+gfx_r=0.7; gfx_g=0.7; gfx_b=0.7;
+gfx_x = 10;
+gfx_y = 145;
+gfx_drawstr("Note Timeout: ");
+note_timeout == 0 ? gfx_drawstr("OFF") : gfx_drawnumber(note_timeout, 0);
+note_timeout != 0 ? gfx_drawstr(" ms");
+
+// ESTADO ACTUAL
+gfx_r=0.4; gfx_g=0.8; gfx_b=1;
+gfx_x = 10;
+gfx_y = 180;
+gfx_drawstr("▶ Current channel: ");
+gfx_drawnumber(current_channel + 1, 0);
+
+gfx_x = 10;
+gfx_y = 200;
+gfx_drawstr("Notes left in group: ");
+gfx_drawnumber(notes_left_in_group, 0);
+
+// Barra de progreso
+(total_group_size > 0 && notes_left_in_group <= total_group_size) ? (
+  progress = (total_group_size - notes_left_in_group) / total_group_size;
+  bar_width = 200 * progress;
+  
+  gfx_r=0.2; gfx_g=0.6; gfx_b=0.2;
+  gfx_rect(10, 220, bar_width, 12);
+  gfx_r=0.4; gfx_g=0.4; gfx_b=0.4;
+  gfx_rect(10 + bar_width, 220, 200 - bar_width, 12);
+  
+  gfx_r=0.9; gfx_g=0.9; gfx_b=0.9;
+  gfx_x = 15;
+  gfx_y = 220;
+  gfx_drawnumber(progress * 100, 0);
+  gfx_drawstr("%");
+);
+
+// Notas activas
+active_notes = 0;
+i = 0;
+loop(128,
+  note_map[i] >= 0 ? active_notes += 1;
+  i += 1;
+);
+
+gfx_r=0.6; gfx_g=0.6; gfx_b=0.6;
+gfx_x = 10;
+gfx_y = gfx_h - 30;
+gfx_drawstr("Active notes: ");
+gfx_drawnumber(active_notes, 0);
+
+// Indicador
+gfx_r=0.3; gfx_g=0.7; gfx_b=0.3;
+gfx_x = 10;
+gfx_y = gfx_h - 15;
+gfx_drawstr("● RUNNING");

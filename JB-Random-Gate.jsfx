@@ -1,0 +1,209 @@
+desc:JB Random Gate - Probability Controlled Gate
+author:JB
+version:1.0
+about:
+  Probability controlled gate with transient detection.
+  - Triggers only on sudden level changes (transients)
+  - SKIP = GATE FORCES CLOSED, NO AUDIO PASSES
+
+slider1:-12<-60,0,1>Open Threshold (dB)
+slider2:-24<-60,0,1>Close Threshold (dB)
+slider3:100<0,100,1>Probability (%)
+slider4:5<0,1000,1>Attack (ms)
+slider5:50<0,1000,1>Release (ms)
+slider6:50<0,1000,10>Hold Time (ms)
+slider7:20<0,100,1>Transient Sensitivity (%)
+slider8:50<0,500,10>Min Retrigger Time (ms)
+
+@init
+gate_open = 0;
+envelope = 0;
+samples_since_last_trigger = 0;
+samples_below_close = 0;
+hold_counter = 0;
+trigger_led = 0;
+skip_led = 0;
+next_trigger_will_open = 1;
+need_new_decision = 1;
+last_input_level = 0;
+
+@slider
+t_open = 10^(slider1/20);
+t_close = 10^(slider2/20);
+probability = slider3 / 100;
+transient_sens = slider7 / 100;
+
+// Attack coefficient
+attack_ms = max(0.1, slider4);
+attack_coeff = exp(-1 / ((attack_ms / 1000) * srate));
+
+// Release coefficient
+release_ms = max(0.1, slider5);
+release_coeff = exp(-1 / ((release_ms / 1000) * srate));
+
+hold_samples = (slider6 / 1000) * srate;
+min_retrigger_samples = (slider8 / 1000) * srate;
+
+@sample
+input_level = max(abs(spl0), abs(spl1));
+
+(trigger_led > 0) ? trigger_led -= 1;
+(skip_led > 0) ? skip_led -= 1;
+(samples_since_last_trigger < 1000000) ? samples_since_last_trigger += 1;
+
+// CALCULATE SLOPE
+slope = input_level - last_input_level;
+last_input_level = input_level;
+
+// NORMALIZE SLOPE
+normalized_slope = (last_input_level > 0.001) ? slope / last_input_level : slope;
+slope_threshold = transient_sens * 0.5;
+
+// DETECT TRANSIENT
+is_transient = (normalized_slope > slope_threshold && input_level > t_open);
+
+// PRE-DEFINE NEXT TRIGGER DECISION
+(need_new_decision == 1) ? (
+    random_val = rand(1);
+    next_trigger_will_open = (random_val < probability);
+    need_new_decision = 0;
+);
+
+// DETECT TRIGGER
+( samples_since_last_trigger > min_retrigger_samples && is_transient ) ? (
+    
+    samples_since_last_trigger = 0;
+    
+    (next_trigger_will_open == 1) ? (
+        // OPEN GATE - smoothly transition to open
+        gate_open = 1;
+        hold_counter = 0;
+        samples_below_close = 0;
+        // DON'T reset envelope to 0 - let attack curve do its job
+        trigger_led = srate * 0.1;
+    ) : (
+        // SKIP - smoothly force gate closed
+        gate_open = 0;
+        skip_led = srate * 0.1;
+    );
+    
+    need_new_decision = 1;
+);
+
+// CHECK IF INPUT BELOW CLOSE THRESHOLD
+(gate_open == 1) ? (
+    (input_level < t_close) ? (
+        samples_below_close += 1;
+    ) : (
+        samples_below_close = 0;
+    );
+);
+
+// HOLD LOGIC
+(gate_open == 1) ? (
+    (hold_counter < hold_samples) ? hold_counter += 1;
+);
+
+// CLOSE GATE
+rel_samples = (max(0.1, slider5) / 1000) * srate;
+(gate_open == 1 && samples_below_close > rel_samples && hold_counter >= hold_samples) ? (
+    gate_open = 0;
+);
+
+// ENVELOPE SMOOTHING - ALWAYS smooth, no abrupt changes
+(gate_open == 1) ? (
+    envelope = envelope * attack_coeff + (1 - attack_coeff);
+) : (
+    envelope = envelope * release_coeff;
+);
+
+envelope = max(0, min(1, envelope));
+
+// APPLY GAIN
+spl0 *= envelope;
+spl1 *= envelope;
+
+@gfx 450 160
+// Background
+gfx_r = 0.08; gfx_g = 0.08; gfx_b = 0.12; gfx_a = 1;
+gfx_rect(0, 0, gfx_w, gfx_h);
+
+// Level Meter
+gfx_x = 10; gfx_y = 10; m_w = 350;
+gfx_r = 0.2; gfx_g = 0.2; gfx_b = 0.2;
+gfx_rect(gfx_x, gfx_y, m_w, 20);
+
+level_db = 20 * log10(max(input_level, 0.000001));
+level_norm = max(0, min(1, (level_db + 60) / 60));
+
+gfx_r = 0; gfx_g = 0.8; gfx_b = 0.3;
+gfx_rect(gfx_x, gfx_y, m_w * level_norm, 20);
+
+// Open threshold line (Red)
+gfx_r = 1; gfx_g = 0.2; gfx_b = 0.2;
+tx_o = max(0, min(m_w, (slider1 + 60) / 60 * m_w));
+gfx_line(10 + tx_o, 7, 10 + tx_o, 33);
+
+// Close threshold line (Orange)
+gfx_r = 1; gfx_g = 0.6; gfx_b = 0;
+tx_c = max(0, min(m_w, (slider2 + 60) / 60 * m_w));
+gfx_line(10 + tx_c, 7, 10 + tx_c, 33);
+
+// LEDs
+gfx_x = 380; gfx_y = 12;
+gate_open ? (gfx_r=0; gfx_g=1; gfx_b=0.4;) : (gfx_r=0.3; gfx_g=0.3; gfx_b=0.3;);
+gfx_circle(gfx_x + 5, gfx_y + 5, 5, 1, 1);
+
+gfx_x = 405; gfx_y = 12;
+(trigger_led > 0) ? (gfx_r=1; gfx_g=0.8; gfx_b=0;) : (gfx_r=0.3; gfx_g=0.3; gfx_b=0.3;);
+gfx_circle(gfx_x + 5, gfx_y + 5, 5, 1, 1);
+
+gfx_x = 430; gfx_y = 12;
+(skip_led > 0) ? (gfx_r=1; gfx_g=0; gfx_b=0;) : (gfx_r=0.3; gfx_g=0.3; gfx_b=0.3;);
+gfx_circle(gfx_x + 5, gfx_y + 5, 5, 1, 1);
+
+// Envelope bar
+gfx_r = 0; gfx_g = 0.4; gfx_b = 0.8;
+gfx_rect(10, 45, 350 * envelope, 6);
+
+// Info text
+gfx_setfont(1, "Arial", 8);
+gfx_x = 380; gfx_y = 45;
+gfx_r = 1; gfx_g = 1; gfx_b = 1;
+gfx_drawstr("P:");
+gfx_drawnumber(slider3, 0);
+gfx_drawstr("%");
+
+gfx_x = 10; gfx_y = 70;
+gfx_r = 0.7; gfx_g = 0.7; gfx_b = 0.7;
+gfx_drawstr("Next: ");
+(next_trigger_will_open == 1) ? (
+    gfx_r = 0; gfx_g = 1; gfx_b = 0.5;
+    gfx_drawstr("OPEN");
+) : (
+    gfx_r = 1; gfx_g = 0.3; gfx_b = 0.3;
+    gfx_drawstr("SKIP");
+);
+
+gfx_x = 10; gfx_y = 90;
+gfx_r = 0.4; gfx_g = 0.4; gfx_b = 0.4;
+gfx_drawstr("Sens:");
+gfx_drawnumber(slider7, 0);
+gfx_drawstr("%  |  Retrig:");
+gfx_drawnumber(slider8, 0);
+gfx_drawstr("ms  |  Gate: ");
+gate_open ? gfx_drawstr("OPEN") : gfx_drawstr("CLSD");
+
+gfx_x = 10; gfx_y = 115;
+gfx_r = 0.3; gfx_g = 0.3; gfx_b = 0.3;
+gfx_drawstr("GREEN=Open  YELLOW=Trigger  RED=Skip");
+
+gfx_x = 10; gfx_y = 140;
+gfx_r = 0.3; gfx_g = 0.3; gfx_b = 0.3;
+gfx_drawstr("Hold: ");
+gfx_drawnumber(slider6, 0);
+gfx_drawstr("ms  |  Attack: ");
+gfx_drawnumber(slider4, 0);
+gfx_drawstr("ms  |  Release: ");
+gfx_drawnumber(slider5, 0);
+gfx_drawstr("ms");

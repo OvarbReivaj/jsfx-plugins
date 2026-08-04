@@ -1,0 +1,101 @@
+desc: JB Manual Poly-Looper (Random Pan + MIDI)
+// Cada vez que pisas el pedal, se asigna una voz con un paneo único.
+
+slider1:0<0,1,1{Off,On}>Trigger (Visual)
+slider2:80<0,100,1>Feedback (%)
+slider3:4<1,4,1>Max Voices
+slider4:1<0,2,0.05>Output Gain
+
+@init
+// Memoria: 6 segundos por voz a 48kHz (aprox 288k muestras por voz)
+v_size = srate * 6; 
+freemem = 0;
+buf0 = freemem; freemem += v_size;
+buf1 = freemem; freemem += v_size;
+buf2 = freemem; freemem += v_size;
+buf3 = freemem; freemem += v_size;
+
+v_bufs = freemem; freemem += 4;
+v_bufs[0]=buf0; v_bufs[1]=buf1; v_bufs[2]=buf2; v_bufs[3]=buf3;
+
+// Datos de voz: [estado, largo, puntero, paneoL, paneoR]
+v_data = freemem; freemem += 20; 
+
+active_v = -1; 
+v_idx = 0;
+
+@slider
+fback = slider2 / 100;
+max_v = slider3;
+
+@block
+while (midirecv(offset, msg1, msg2, msg3)) (
+  status = msg1 & $xF0;
+  is_cc64 = (status == $xB0 && msg2 == 64);
+  is_note = (status == $x90 || status == $x80);
+
+  (is_cc64 || is_note) ? (
+    // Lógica al PRESIONAR
+    (msg3 > 0 && status != $x80) ? (
+      slider1 = 1;
+      active_v = v_idx % max_v;
+      v_data[active_v*5 + 0] = 1; // Estado Recording
+      v_data[active_v*5 + 1] = 0; // Reset Largo
+      v_data[active_v*5 + 2] = 0; // Reset Puntero
+      
+      // Asignar Paneo Aleatorio
+      p = rand(1); // Valor entre 0 y 1
+      v_data[active_v*5 + 3] = 1.0 - p; // Ganancia Izquierda
+      v_data[active_v*5 + 4] = p;       // Ganancia Derecha
+      
+      memset(v_bufs[active_v], 0, v_size); 
+      v_idx += 1;
+    ) : (
+      // Lógica al SOLTAR
+      slider1 = 0;
+      (active_v != -1) ? (
+        v_data[active_v*5 + 0] = 2; // Estado Playback
+        active_v = -1;
+      );
+    );
+  );
+  midisend(offset, msg1, msg2, msg3);
+);
+
+@sample
+inL = spl0; inR = spl1;
+sumL = 0; sumR = 0;
+
+v = 0;
+loop(max_v,
+  state = v_data[v*5 + 0];
+  len   = v_data[v*5 + 1];
+  ptr   = v_data[v*5 + 2];
+  panL  = v_data[v*5 + 3];
+  panR  = v_data[v*5 + 4];
+  buf   = v_bufs[v];
+
+  (state == 1) ? (
+    // GRABANDO (Mono-sum para el buffer interno)
+    buf[ptr | 0] = (inL + inR) * 0.5;
+    v_data[v*5 + 1] += 1; // Incrementar largo
+    v_data[v*5 + 2] += 1; // Incrementar puntero
+    (v_data[v*5 + 2] >= v_size) ? ( v_data[v*5 + 0] = 2; active_v = -1; );
+  ) : (state == 2) ? (
+    // REPRODUCIENDO CON PANEO
+    val = buf[ptr | 0];
+    sumL += val * panL;
+    sumR += val * panR;
+    
+    // Feedback
+    buf[ptr | 0] = val * fback;
+    
+    v_data[v*5 + 2] += 1;
+    (v_data[v*5 + 2] >= len) ? v_data[v*5 + 2] = 0;
+  );
+  v += 1;
+);
+
+// Mezcla final: Dry + Wet (con ganancia de salida)
+spl0 = inL + (sumL * slider4);
+spl1 = inR + (sumR * slider4);

@@ -1,0 +1,103 @@
+desc: JB PolyMetric Tracker v3 (Independent Voices + GFX LED)
+
+slider1:-20<-60,0,1>Threshold (dB)
+slider2:180<50,1000,10>Retrigger (ms)
+slider3:4<2,8,1>Averages (Notes)
+slider4:70<0,100,1>Feedback (%)
+slider5:3<1,5,1>Max Voices
+
+@init
+// Configuración de memoria: 1 buffer de 2 segundos por cada voz (máximo 5 voces)
+// Usamos 2 segundos para mantener la memoria eficiente y la polimetría clara
+v_buf_size = srate * 2; 
+freemem = 0;
+buf0 = freemem; freemem += v_buf_size;
+buf1 = freemem; freemem += v_buf_size;
+buf2 = freemem; freemem += v_buf_size;
+buf3 = freemem; freemem += v_buf_size;
+buf4 = freemem; freemem += v_buf_size;
+
+// Tabla de punteros de buffers
+voice_buffers = freemem; freemem += 5;
+voice_buffers[0] = buf0; voice_buffers[1] = buf1; 
+voice_buffers[2] = buf2; voice_buffers[3] = buf3; 
+voice_buffers[4] = buf4;
+
+voice_data = freemem; freemem += 20; // [active, len, w_ptr, 0]
+intervals = freemem; freemem += 10;
+
+t_count = 0;
+at_index = 0;
+v_idx = 0;
+led_alpha = 0;
+
+@slider
+thresh = 10^(slider1/20);
+retrigger_s = (slider2 / 1000) * srate;
+fback = slider4 / 100;
+v_gain = 1 / slider5;
+
+@sample
+in0 = spl0;
+t_count += 1;
+
+// --- Detección de Trigger ---
+(abs(in0) > thresh && t_count > retrigger_s) ? (
+  led_alpha = 1.0; // Encender LED gráfico
+  (at_index > 0) ? intervals[at_index-1] = t_count;
+  at_index += 1;
+  t_count = 0;
+  
+  (at_index >= slider3) ? (
+    i = 0; sum = 0; loop(slider3 - 1, sum += intervals[i]; i += 1;);
+    avg_len = sum / (slider3 - 1);
+    
+    // Inicializar nueva voz independiente
+    v = v_idx % slider5;
+    voice_data[v*4] = 1;       // Active
+    voice_data[v*4+1] = min(avg_len, v_buf_size - 1); // Delay Len
+    voice_data[v*4+2] = 0;     // Reset Write Pointer para esta voz
+    
+    // Limpiar el buffer de esta voz específica antes de empezar
+    memset(voice_buffers[v], 0, v_buf_size);
+    
+    v_idx += 1;
+    at_index = 0;
+  );
+);
+
+// --- Procesamiento de Voces Independientes ---
+out_sum = 0;
+v_i = 0;
+loop(slider5,
+  (voice_data[v_i*4] == 1) ? (
+    curr_buf = voice_buffers[v_i];
+    d_len = voice_data[v_i*4+1];
+    w_ptr = voice_data[v_i*4+2];
+    
+    // Leer del buffer privado de la voz
+    r_ptr = w_ptr - d_len;
+    (r_ptr < 0) ? r_ptr += v_buf_size;
+    
+    delayed_val = curr_buf[r_ptr | 0];
+    
+    // Escribir en el buffer privado (In + Feedback propio)
+    curr_buf[w_ptr | 0] = (in0 * 0.5) + (delayed_val * fback);
+    
+    out_sum += delayed_val;
+    
+    // Avanzar puntero de la voz
+    voice_data[v_i*4+2] = (w_ptr + 1) % v_buf_size;
+  );
+  v_i += 1;
+);
+
+// LED fade out
+led_alpha *= 0.9995; 
+
+spl0 = spl1 = in0 + (out_sum * v_gain);
+
+@gfx 20 20
+// Dibujar el LED en la esquina superior izquierda
+gfx_r = 1; gfx_g = 0; gfx_b = 0; gfx_a = led_alpha;
+gfx_circle(10, 10, 8, 1);

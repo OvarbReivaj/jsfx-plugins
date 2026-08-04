@@ -1,0 +1,260 @@
+desc:JB MIDI Granular Generator (Fixed)
+author:Javier Bravo
+version:1.5
+about:
+  # JB MIDI Granular Generator - Fixed Version
+  Fixed stuck note issues and improved reliability.
+  Input Notes Only mode now ONLY uses notes from input (no fallback to range).
+
+slider1:200<10,1000,1>Rate (ms)
+slider2:0<0,500,1>Rate Deviation (ms)
+slider3:100<0,100,1>Probability (%)
+slider4:500<10,4000,1>Duration (ms)
+slider5:0<0,2000,1>Duration Deviation (ms)
+slider6:64<0,127,1>Central Velocity
+slider7:20<0,64,1>Velocity Deviation
+slider8:0<0,1,1{All Notes,Input Notes Only}>Pitch Mode
+slider9:0<0,127,1>Note Out Min
+slider10:127<0,127,1>Note Out Max
+slider11:0<0,1,1{Allow,Avoid}>Repeats
+slider12:0<0,100,1>Chord Prob (%)
+slider13:3<1,5,1>Max Chord Size
+
+@init
+notes_buffer = 0;       
+off_buffer_pitch = 200; 
+off_buffer_time = 400;  
+chord_memory = 600;     
+active_notes_list = 800;  // Lista de notas activas para input mode
+
+// Inicializar active_notes_list con -1 (vacío)
+i = 0;
+loop(128,
+  active_notes_list[i] = -1;
+  i += 1;
+);
+
+max_pending_notes = 128;
+num_active_notes = 0;
+next_event_samples = 0;
+last_pitch = -1;
+last_s9 = slider9;
+last_s10 = slider10;
+
+@slider
+slider9 = max(0, min(127, slider9));
+slider10 = max(0, min(127, slider10));
+
+slider9 != last_s9 && slider9 > slider10 ? (
+  slider10 = slider9;
+  slider_automate(slider10);
+);
+
+slider10 != last_s10 && slider10 < slider9 ? (
+  slider9 = slider10;
+  slider_automate(slider9);
+);
+
+last_s9 = slider9;
+last_s10 = slider10;
+
+rate_samples = max(1, (slider1 / 1000) * srate);
+rate_dev_samples = max(0, (slider2 / 1000) * srate);
+
+@block
+// Note Off scheduler
+i_off = 0;
+loop(max_pending_notes,
+  off_buffer_time[i_off] > 0 ? (
+    off_buffer_time[i_off] -= samplesblock;
+    off_buffer_time[i_off] <= 0 ? (
+      pitch_val = off_buffer_pitch[i_off];
+      pitch_val >= 0 && pitch_val <= 127 ? (
+        midisend(0, $x80, pitch_val, 0);
+      );
+      off_buffer_time[i_off] = 0;
+      off_buffer_pitch[i_off] = -1;
+    );
+  );
+  i_off += 1;
+);
+
+// Reset en stop
+play_state == 0 && prev_play_state != 0 ? (
+  i_stop = 0;
+  loop(128, 
+    midisend(0, $x80, i_stop, 0);
+    i_stop += 1;
+  );
+  memset(off_buffer_time, 0, max_pending_notes);
+  memset(off_buffer_pitch, -1, max_pending_notes);
+  
+  // Limpiar lista de notas activas
+  i_clear = 0;
+  loop(128,
+    active_notes_list[i_clear] = -1;
+    i_clear += 1;
+  );
+  
+  num_active_notes = 0;
+  last_pitch = -1;
+  next_event_samples = 0;
+);
+prev_play_state = play_state;
+
+// MIDI Input Monitor - construir lista de notas activas
+while (midirecv(offset, msg1, msg2, msg3)) (
+  status = msg1 & $xF0;
+  note = msg2;
+  vel = msg3;
+  
+  note >= 0 && note <= 127 ? (
+    status == $x90 && vel > 0 ? (
+      notes_buffer[note] == 0 ? (
+        num_active_notes += 1;
+        // Añadir a la lista de activas (primer slot libre)
+        idx = 0;
+        slot_found = 0;
+        loop(128,
+          slot_found == 0 && active_notes_list[idx] == -1 ? (
+            active_notes_list[idx] = note;
+            slot_found = 1;
+          );
+          idx += 1;
+        );
+      );
+      notes_buffer[note] = 1;
+    ) : (status == $x80 || (status == $x90 && vel == 0)) ? (
+      notes_buffer[note] == 1 ? (
+        num_active_notes -= 1;
+        // Remover de la lista de activas
+        idx = 0;
+        loop(128,
+          active_notes_list[idx] == note ? active_notes_list[idx] = -1;
+          idx += 1;
+        );
+      );
+      notes_buffer[note] = 0;
+    );
+  );
+  
+  midisend(offset, msg1, msg2, msg3); 
+);
+
+@sample
+next_event_samples -= 1;
+
+next_event_samples <= 0 ? (
+  // Verificar si podemos generar notas
+  can_generate = 1;
+  slider8 == 1 && num_active_notes == 0 ? can_generate = 0;
+  
+  can_generate == 1 && rand(100) < slider3 ? (
+    chord_roll = rand(100);
+    num_notes_in_chord = (chord_roll < slider12 && slider13 > 1) ? 
+                         min(5, floor(rand(slider13 - 1)) + 2) : 1;
+    
+    chord_memory[0] = -1;
+    chord_memory[1] = -1;
+    chord_memory[2] = -1;
+    chord_memory[3] = -1;
+    chord_memory[4] = -1;
+    
+    n_idx = 0;
+    
+    loop(num_notes_in_chord,
+      chosen_pitch = -1;
+      found_pitch = 0;
+      
+      attempt = 0;
+      loop(30,
+        attempt += 1;
+        found_pitch == 0 ? (
+          slider8 == 0 ? (
+            // Modo All Notes - usar rango
+            slider10 > slider9 ? (
+              chosen_pitch = floor(rand(slider10 - slider9 + 1)) + slider9;
+            ) : (
+              chosen_pitch = slider9;
+            );
+          ) : (
+            // Modo Input Notes Only - SOLO usar notas activas
+            // Construir lista temporal de notas activas válidas (dentro del rango)
+            active_count = 0;
+            temp_list = 900;
+            idx = 0;
+            loop(128,
+              active_notes_list[idx] != -1 ? (
+                note_val = active_notes_list[idx];
+                // Verificar que la nota esté dentro del rango especificado
+                note_val >= slider9 && note_val <= slider10 ? (
+                  temp_list[active_count] = note_val;
+                  active_count += 1;
+                );
+              );
+              idx += 1;
+            );
+            
+            // Seleccionar una nota aleatoria de las activas
+            active_count > 0 ? (
+              chosen_pitch = temp_list[floor(rand(active_count))];
+            ) : (
+              chosen_pitch = -1;  // No hay notas activas en el rango
+            );
+          );
+          
+          chosen_pitch != -1 ? (
+            is_unison = 0;
+            loop_idx = 0;
+            loop(n_idx, 
+              chord_memory[loop_idx] == chosen_pitch ? is_unison = 1;
+              loop_idx += 1;
+            );
+            
+            repeat_ok = 1;
+            slider11 == 1 && chosen_pitch == last_pitch ? (
+              slider8 == 0 ? (slider10 > slider9 ? repeat_ok = 0 : repeat_ok = 1) :
+                            (active_count > 1 ? repeat_ok = 0 : repeat_ok = 1);
+            );
+            
+            is_unison == 0 && repeat_ok == 1 ? found_pitch = 1;
+          );
+        );
+      );
+      
+      found_pitch == 1 && chosen_pitch != -1 ? (
+        chord_memory[n_idx] = chosen_pitch;
+        
+        v_dev = (rand(slider7 * 2) - slider7);
+        final_vel = max(1, min(127, floor(slider6 + v_dev)));
+        
+        d_dev = (rand(slider5 * 2) - slider5);
+        dur_ms = max(10, slider4 + d_dev);
+        final_dur_samples = floor((dur_ms / 1000) * srate);
+        
+        midisend(0, $x90, chosen_pitch, final_vel);
+        
+        slot_found = 0;
+        slot_idx = 0;
+        loop(max_pending_notes,
+          slot_found == 0 && off_buffer_time[slot_idx] <= 0 ? (
+            off_buffer_pitch[slot_idx] = chosen_pitch;
+            off_buffer_time[slot_idx] = final_dur_samples;
+            slot_found = 1;
+          );
+          slot_idx += 1;
+        );
+        
+        slot_found == 0 ? (
+          midisend(final_dur_samples, $x80, chosen_pitch, 0);
+        );
+        
+        last_pitch = chosen_pitch;
+        n_idx += 1;
+      );
+    );
+  );
+  
+  r_dev = (rand(rate_dev_samples * 2) - rate_dev_samples);
+  next_event_samples = max(1, rate_samples + r_dev);
+);

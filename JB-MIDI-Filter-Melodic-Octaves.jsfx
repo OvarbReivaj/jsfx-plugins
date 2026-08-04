@@ -1,0 +1,58 @@
+desc: JB-MIDI Filter Melodic Octaves 
+// Autor: Javier Bravo
+about: this plugin filters melodic and harmonic unisons and/or octaves by tracking note history.
+slider1:5<0,20,1>Memory Depth (Notes)
+slider2:1<0,1,1{Off,On}>Filter Unisons
+slider3:1<0,1,1{Off,On}>Filter Octaves
+
+@init
+// Buffer para el historial de notas (FIFO - First In, First Out)
+// Usamos la posición 1000 de memoria para no chocar con otros plugins
+history_buffer = 1000;
+history_count = 0;
+
+@block
+while (midirecv(offset, msg1, msg2, msg3)) (
+  status = msg1 & $xF0;
+  note = msg2;
+  vel = msg3;
+  
+  status == $x90 && vel > 0 ? (
+    allow_note = 1;
+    
+    // 1. Revisar el historial de notas previas
+    i = 0;
+    loop(slider1,
+      i < history_count ? (
+        prev_note = history_buffer[i];
+        
+        // Lógica de Unísono melódico
+        slider2 == 1 && note == prev_note ? allow_note = 0;
+        
+        // Lógica de Octava melódica
+        slider3 == 1 ? (
+          diff = abs(note - prev_note);
+          diff > 0 && diff % 12 == 0 ? allow_note = 0;
+        );
+      );
+      i += 1;
+    );
+    
+    allow_note ? (
+      // Desplazar historial para hacer espacio a la nueva nota (FIFO)
+      j = slider1 - 1;
+      loop(slider1 - 1,
+        history_buffer[j] = history_buffer[j-1];
+        j -= 1;
+      );
+      history_buffer[0] = note;
+      history_count = min(history_count + 1, slider1);
+      
+      midisend(offset, msg1, msg2, msg3);
+    );
+    
+  ) : (
+    // Dejar pasar Note Off, CC, etc. sin procesar el historial
+    midisend(offset, msg1, msg2, msg3);
+  );
+);

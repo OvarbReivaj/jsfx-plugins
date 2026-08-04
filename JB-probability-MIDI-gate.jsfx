@@ -1,0 +1,9 @@
+desc:JB probability MIDI gate
+slider1:50<0,100,1>Probabilidad %
+
+@block
+while (midirecv(ts, msg1, msg2, msg3)) (
+  (msg1 & $xF0) == $x90 ? ( // Si es una nota activada (Note On)
+    rand(100) < slider1 ? midisend(ts, msg1, msg2, msg3) : 0;
+  ) : midisend(ts, msg1, msg2, msg3); // Deja pasar el resto (Note Off, etc)
+)

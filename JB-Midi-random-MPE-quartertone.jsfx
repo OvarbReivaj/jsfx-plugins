@@ -1,0 +1,89 @@
+desc: Selector Polifónico Anti-Stuck Notes (MPE)
+
+slider1:48<1, 96, 1>Rango Pitch Bend del Sintetizador (ST)
+slider2:50<0, 200, 1>Desafinación Alternativa (Cents)
+slider3:0<0, 2, 1{Siempre Arriba (+), Siempre Abajo (-), Azar (+ ó -)}>Dirección de la Alteración
+
+@init
+next_ch = 1; 
+
+// Limpiamos la memoria de canales de notas (0 a 127)
+i = 0;
+loop(128,
+  note_channel[i] = 0;
+  i += 1;
+);
+
+@slider
+rango_sinte_en_cents = slider1 * 100;
+cents_desafination = slider2;
+unidades_pb = (cents_desafination / rango_sinte_en_cents) * 8191;
+
+@block
+while (midirecv(ts, msg1, msg2, msg3)) (
+  status = msg1 & $xF0;
+  channel = msg1 & $x0F;
+  
+  (status == $x90 && msg3 > 0) ? (
+    
+    // Si la nota ya estaba activa en algún canal, la apagamos primero
+    prev_ch = note_channel[msg2];
+    prev_ch > 0 ? (
+      midisend(ts, $x80 | prev_ch, msg2, 0);
+    );
+    
+    // Rotamos canal (del 1 al 15 internamente -> canales reales 2 al 16)
+    next_ch += 1;
+    next_ch > 15 ? next_ch = 1;
+    
+    // Decisión de la afinación
+    rand(1) > 0.5 ? (
+      slider3 == 0 ? (
+        rand_val = 8192 + unidades_pb;
+      ) : slider3 == 1 ? (
+        rand_val = 8192 - unidades_pb;
+      ) : (
+        rand_val = rand(1) > 0.5 ? 8192 + unidades_pb : 8192 - unidades_pb;
+      );
+    ) : (
+      rand_val = 8192; // Nota justa
+    );
+    
+    rand_val = max(0, min(16383, rand_val));
+    
+    // 1. Enviar Pitch Bend al canal rotativo
+    midisend(ts, $xE0 | next_ch, rand_val & $x7F, (rand_val >> 7) & $x7F);
+    
+    // 2. Enviar el Note On por el canal rotativo
+    midisend(ts, status | next_ch, msg2, msg3);
+    
+    // Guardamos en la memoria qué canal está usando esta nota
+    note_channel[msg2] = next_ch;
+    
+  ) : (status == $x80 || (status == $x90 && msg3 == 0)) ? (
+    
+    // Al soltar la nota, recuperamos el canal
+    assigned_ch = note_channel[msg2];
+    
+    assigned_ch > 0 ? (
+      // Enviamos el Note Off al canal correcto
+      midisend(ts, $x80 | assigned_ch, msg2, msg3);
+      note_channel[msg2] = 0;
+    ) : (
+      // Si por alguna razón no había registro, lo mandamos por el canal 1 por seguridad
+      midisend(ts, $x80 | 0, msg2, msg3);
+    );
+    
+  ) : (status == $xB0 && msg2 == 64) ? (
+    // Si es el pedal de Sustain (CC 64), lo replicamos a los 16 canales en paralelo
+    ch_idx = 0;
+    loop(16,
+      midisend(ts, $xB0 | ch_idx, msg2, msg3);
+      ch_idx += 1;
+    );
+    
+  ) : (
+    // Cualquier otro mensaje MIDI pasa normal
+    midisend(ts, msg1, msg2, msg3);
+  );
+);

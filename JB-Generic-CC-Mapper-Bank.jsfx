@@ -1,0 +1,43 @@
+desc: JB Generic CC Mapper Bank v1.1
+author: Javier Bravo
+options:gmem=JB_Global_Bus
+
+// --- INPUTS ---
+slider1:0<0,1,0.00001>Input 1
+slider2:0<0,1,0.00001>Input 2
+slider3:0<0,1,0.00001>Input 3
+slider4:0<0,1,0.00001>Input 4
+
+// --- MIDI CC ASSIGNMENT ---
+slider10:20<1,127,1>CC Channel 1
+slider11:21<1,127,1>CC Channel 2
+slider12:22<1,127,1>CC Channel 3
+slider13:23<1,127,1>CC Channel 4
+
+// --- INDEPENDENT OUTPUT RANGES ---
+slider20:0<0,1,0.01>In 1: Min Out
+slider21:1<0,1,0.01>In 1: Max Out
+slider22:0<0,1,0.01>In 2: Min Out
+slider23:1<0,1,0.01>In 2: Max Out
+slider24:0<0,1,0.01>In 3: Min Out
+slider25:1<0,1,0.01>In 3: Max Out
+slider26:0<0,1,0.01>In 4: Min Out
+slider27:1<0,1,0.01>In 4: Max Out
+
+@init
+last_cc1 = last_cc2 = last_cc3 = last_cc4 = -1;
+
+@sample
+function send_mapped_cc(val, min_val, max_val, cc_num, last_val) (
+  scaled = (min_val + (val * (max_val - min_val))) * 127;
+  curr_cc = floor(max(0, min(127, scaled)));
+  curr_cc != last_val ? (
+    midisend(0, $xB0, cc_num, curr_cc);
+  );
+  curr_cc; 
+);
+
+last_cc1 = send_mapped_cc(slider1, slider20, slider21, slider10, last_cc1);
+last_cc2 = send_mapped_cc(slider2, slider22, slider23, slider11, last_cc2);
+last_cc3 = send_mapped_cc(slider3, slider24, slider25, slider12, last_cc3);
+last_cc4 = send_mapped_cc(slider4, slider26, slider27, slider13, last_cc4);

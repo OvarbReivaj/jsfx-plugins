@@ -1,0 +1,67 @@
+desc: JB Data Mapper v1.4 (Smoothing + MIDI)
+author: Javier Bravo
+
+// --- INPUT SECTION ---
+slider1:0<0,1,0.00001>Input Value (Raw 0-1)
+slider2:0<0,1,0.01>Input Min
+slider3:1<0,1,0.01>Input Max
+slider7:1<0.1,5,0.1>Curve (1=Linear, >1=Exp, <1=Log)
+slider6:20<1,500,1>Smoothing (ms)
+
+// --- OUTPUT SECTION (HIGH-RES) ---
+slider4:0<0,1,0.001>Output Min (0-1)
+slider5:1<0,1,0.001>Output Max (0-1)
+slider12:0<0,1,0.00001>Scaled Data (High-Res)
+
+// --- MIDI OUTPUT SECTION ---
+slider9:0<0,16,1{Off,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}>MIDI Channel
+slider10:20<1,127,1>MIDI CC Number
+
+@init
+s_val = 0;
+last_cc_val = -1; // To avoid redundant MIDI messages
+
+@slider
+// Calculate smoothing coefficient once per slider change
+coeff = 1 - exp(-1 / (slider6 * 0.001 * srate));
+
+@sample
+// 1. NORMALIZE INPUT
+norm_in = (slider1 - slider2) / (slider3 - slider2);
+norm_in = min(1, max(0, norm_in));
+
+// 2. APPLY CURVE
+curved_in = norm_in ^ slider7;
+
+// 3. SMOOTHING
+s_val += (curved_in - s_val) * coeff;
+
+// 4. SCALE TO HIGH-RES OUTPUT
+slider12 = slider4 + (s_val * (slider5 - slider4));
+slider_automate(slider12);
+
+// 5. MIDI SEND
+slider9 > 0 ? (
+  current_cc = floor(slider12 * 127);
+  // Only send if the integer value actually changed
+  current_cc != last_cc_val ? (
+    midisend(0, $xB0 | (slider9-1), slider10, current_cc);
+    last_cc_val = current_cc;
+  );
+);
+
+@gfx 450 150
+gfx_setfont(1, "Arial", 15, 'b');
+gfx_r=0.6; gfx_g=1; gfx_b=0.6; gfx_x=20; gfx_y=20;
+gfx_drawstr("DATA MAPPER: "); gfx_drawnumber(slider12, 4);
+
+// Visual feedback
+gfx_r=0.15; gfx_g=0.15; gfx_b=0.15; gfx_rect(20, 50, 410, 25);
+gfx_r=0.4; gfx_g=0.8; gfx_b=0.4; gfx_rect(20, 50, slider12 * 410, 25);
+
+gfx_setfont(1, "Arial", 12);
+gfx_r=0.8; gfx_g=0.8; gfx_b=0.8; gfx_x=20; gfx_y=95;
+gfx_drawstr("MIDI Ch: "); 
+slider9 == 0 ? gfx_drawstr("OFF") : gfx_drawnumber(slider9, 0);
+gfx_drawstr(" | CC: "); gfx_drawnumber(slider10, 0);
+gfx_drawstr(" | Smooth: "); gfx_drawnumber(slider6, 0); gfx_drawstr("ms");

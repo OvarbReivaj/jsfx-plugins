@@ -1,0 +1,88 @@
+desc: JB Audio Analyzer (trigger and continuous)
+author: Javier Bravo
+// About: Inspired by Tristan Jehan’s Max object, this plugin tracks 
+// Brightness, Noisiness, and Intensity, mapping them to UI sliders 
+// for REAPER parameter modulation and automation. 
+// Attack Sensitivity helps fine-tune attack detection based on dynamics, 
+// working alongside the Detection Threshold. 
+// As a reference, ~1.5 works well for percussion, while 2.0 to 3.0 
+// suit instruments with smoother envelopes like guitars or vocals. 
+// Further scaling or smoothing may be required.
+
+slider1:-45<-100,0,1>Detection Threshold (dB)
+slider2:1.5<1,4,0.1>Attack Sensitivity (Ratio)
+slider3:50<10,500,10>Retrigger Delay (ms)
+slider4:20<1,200,1>Global Smoothing (ms)
+
+slider10:0<0,1,0.001>Continuous Brightness
+slider11:0<0,1,0.001>Continuous Noiseness
+slider12:0<0,1,0.001>Continuous Intensity
+
+slider20:0<0,1,0.001>Attack Brightness
+slider21:0<0,1,0.001>Attack Noiseness
+slider22:0<0,1,0.001>Attack Intensity
+
+@init
+fftsize = 1024; pos = 0; buf_input = 0; fft_workspace = 2048;
+last_trigger_time = 0;
+smooth_b = 0; smooth_n = 0; smooth_i = 0;
+
+@sample
+in = (spl0 + spl1) * 0.5;
+buf_input[pos] = in;
+pos += 1;
+abs(in) > peak_sample ? peak_sample = abs(in);
+
+pos >= fftsize ? (
+  // 1. INTENSITY CALCULATION
+  db_val = 20 * log10(peak_sample + 0.00001);
+  raw_i = min(1, max(0, (db_val + 60) / 60));
+
+  // 2. SPECTRAL ANALYSIS (FFT)
+  i = 0; loop(fftsize, fft_workspace[i*2] = buf_input[i]; fft_workspace[i*2+1] = 0; i += 1; );
+  fft(fft_workspace, fftsize);
+  fft_permute(fft_workspace, fftsize);
+  
+  i = 0; s_mag = 0; s_w_mag = 0; s_log_mag = 0;
+  count = fftsize / 2;
+  loop(count,
+    mag = sqrt(fft_workspace[i*2]^2 + fft_workspace[i*2+1]^2) + 0.00001;
+    s_mag += mag;
+    s_w_mag += mag * i;
+    s_log_mag += log(mag);
+    i += 1;
+  );
+  
+  // Raw Continuous values
+  raw_b = s_w_mag / (s_mag * count); 
+  flatness = exp(s_log_mag / count) / (s_mag / count);
+  raw_n = min(1, max(0, flatness)); 
+
+  // SMOOTHING CALCULATION (One-pole based on slider4 ms)
+  block_time = fftsize / srate;
+  target_ms = max(1, slider4);
+  coef = exp(-block_time / (target_ms * 0.001));
+
+  smooth_b = smooth_b * coef + raw_b * (1 - coef);
+  smooth_n = smooth_n * coef + raw_n * (1 - coef);
+  smooth_i = smooth_i * coef + raw_i * (1 - coef);
+
+  // Update Continuous Sliders (Smoothed)
+  slider10 = smooth_b;
+  slider11 = smooth_n;
+  slider12 = smooth_i;
+
+  // 3. ONSET DETECTION (ATTACK SNAPSHOTS - Using Raw values)
+  can_trigger = (time_precise() - last_trigger_time) > (slider3 / 1000);
+  threshold_lin = 10 ^ (slider1 / 20);
+  
+  peak_sample > threshold_lin && peak_sample > prev_peak * slider2 && can_trigger ? (
+     slider20 = raw_b; // Snapshot Raw Brightness
+     slider21 = raw_n; // Snapshot Raw Noiseness
+     slider22 = raw_i; // Snapshot Raw Intensity
+     last_trigger_time = time_precise();
+  );
+
+  prev_peak = peak_sample;
+  peak_sample = 0; pos = 0;
+);

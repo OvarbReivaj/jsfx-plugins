@@ -1,0 +1,59 @@
+desc: JB MIDI Note Mapper (attack to note gen)
+author: Javier Bravo
+about: link source sliders to attack analyzer data (optionally scaled by data mapper)
+Set midi output range by sliders below.
+Pitch quantize is an option in process, aiming to quantize to user scales.
+
+// --- INPUTS (Link these from the Sensor) ---
+slider1:0<0,1,0.00001>Attack Value (Pitch Source)
+slider2:0<0,1,0.00001>Attack Intensity (Velocity Source)
+
+// --- NOTE SETTINGS ---
+slider4:36<0,127,1>Min MIDI Note (C2)
+slider5:84<0,127,1>Max MIDI Note (C6)
+slider6:200<10,2000,10>Note Duration (ms)
+slider7:0<0,1,1{Linear,Snap to Scale}>Pitch Quantize
+
+@init
+notes_list = 1000; // Buffer to store note-off times
+i = 0; loop(128, notes_list[i] = 0; i += 1;);
+
+@sample
+// 1. DETECT NEW ATTACK
+// We watch for changes in the Intensity slider from the sensor
+slider2 != last_intensity ? (
+  
+  // Calculate Note Number
+  range = slider5 - slider4;
+  note_out = floor(slider4 + (slider1 * range));
+  
+  // Calculate Velocity (0-127)
+  vel_out = floor(slider2 * 127);
+  
+  // Send MIDI Note On
+  vel_out > 0 ? (
+    midisend(0, $x90, note_out, vel_out);
+    notes_list[note_out] = time_precise() + (slider6 / 1000);
+  );
+  
+  last_intensity = slider2;
+);
+
+// 2. AUTOMATIC NOTE OFF
+i = 0;
+loop(128,
+  notes_list[i] > 0 && time_precise() >= notes_list[i] ? (
+    midisend(0, $x80, i, 0);
+    notes_list[i] = 0;
+  );
+  i += 1;
+);
+
+@gfx 400 120
+gfx_setfont(1, "Arial", 16, 'b');
+gfx_r=1; gfx_g=0.6; gfx_b=0.2; gfx_x=20; gfx_y=20;
+gfx_drawstr("NOTE MAPPER");
+
+gfx_r=1; gfx_g=1; gfx_b=1;
+gfx_x=20; gfx_y=50; gfx_drawstr("Last Note: "); gfx_drawnumber(note_out, 0);
+gfx_x=20; gfx_y=75; gfx_drawstr("Velocity: "); gfx_drawnumber(vel_out, 0);

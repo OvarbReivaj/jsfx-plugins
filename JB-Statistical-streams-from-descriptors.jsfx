@@ -1,0 +1,70 @@
+desc: JB Statistical streams from descriptors
+author: Javier Bravo
+options:gmem=JB_Global_Bus
+
+// --- INPUTS ---
+slider1:0<0,1,0.00001>Input: Attack Trigger
+slider2:0<0,1,0.00001>Input: Brightness
+slider3:0<0,1,0.00001>Input: Intensity
+slider4:0<0,1,0.00001>Input: Noiseness
+
+// --- SETTINGS ---
+slider6:1<0.1,5,0.1>Density Window (sec)
+slider7:10<1,60,1>Macro Smooth Time (sec)
+
+// --- OUTPUTS ---
+slider10:0<0,50,0.1>Output: Attacks Per Second
+slider11:0<0,1,0.00001>Macro: Brightness
+slider12:0<0,1,0.00001>Macro: Intensity
+slider13:0<0,1,0.00001>Macro: Noiseness
+
+@init
+// Optimization: We only store timestamps of the last 100 attacks
+// instead of a full audio-rate buffer.
+MAX_ATKS = 100;
+atk_times = 0; // Memory pointer
+ptr = 0;
+count = 0;
+
+@slider
+m_coeff = 1 - exp(-1 / (slider7 * srate));
+
+@sample
+// 1. LIGHTWEIGHT DENSITY CALCULATION
+slider1 != last_atk ? (
+  atk_times[ptr] = time_precise(); // Store the exact second of the attack
+  ptr = (ptr + 1) % MAX_ATKS;      // Circular pointer
+  last_atk = slider1;
+);
+
+// Count how many timestamps fall within the window
+now = time_precise();
+window = slider6;
+i = 0;
+active_atks = 0;
+loop(MAX_ATKS,
+  // If timestamp is within [now - window, now], it's a valid attack
+  (atk_times[i] > (now - window)) ? active_atks += 1;
+  i += 1;
+);
+slider10 = active_atks / window;
+
+// 2. MACRO SMOOTHING (Constant CPU cost)
+m_bright += (slider2 - m_bright) * m_coeff;
+m_intens += (slider3 - m_intens) * m_coeff;
+m_noise  += (slider4 - m_noise)  * m_coeff;
+
+slider11 = m_bright; 
+slider12 = m_intens; 
+slider13 = m_noise;
+
+// 3. GLOBAL DISPATCH
+gmem[4] = slider10 / 20; 
+gmem[5] = slider11;
+gmem[6] = slider12;
+gmem[7] = slider13;
+
+@gfx 450 150
+gfx_r=0.4; gfx_g=0.7; gfx_b=1; gfx_x=20; gfx_y=20;
+gfx_drawstr("STATISTICAL MACRO (V2: LOW RAM)");
+// ... (rest of visual code)

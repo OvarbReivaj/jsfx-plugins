@@ -1,0 +1,109 @@
+desc:JB Soloist & Accompanist Manager (V20 - Final)
+author: Javier Bravo
+about:
+  # JB Soloist & Accompanist Manager
+  An algorithmic tool for dynamic interaction between two sound sources.
+  - Channels 3-4 (Soloist): Controls the behavior.
+  - Channels 1-2 (Accompanist): The signal being processed.
+
+  Logic:
+  1. The Accompanist always fades out when the Soloist plays above the Threshold.
+  2. When the Soloist stops, a "Fill Probability" check occurs.
+  3. If successful, the Accompanist enters after an "Entry Delay".
+  4. If the check fails, the Accompanist remains silent unless the "Max Idle Wait" time is exceeded.
+
+// [Slider Name] = [Default] < [Min], [Max], [Step] >
+slider1:-24<-60,0,1>Soloist Threshold (dB)
+slider2:10<1,500,1>Accompanist Fade-Out (ms)
+slider3:300<10,2000,10>Accompanist Fade-In (ms)
+slider4:75<0,100,1>Fill Probability (%)
+slider5:1200<0,5000,100>Max Idle Wait (ms)
+slider6:120<0,1000,10>Accompanist Entry Delay (ms)
+
+@init
+state = 0; 
+envelope = 0;
+ready_to_roll = 1;
+idle_counter = 0;
+delay_counter = 0;
+in_delay_phase = 0;
+meter_hold = 0;
+env_detector = 0;
+env_attack = exp(-1/(0.005 * srate)); 
+
+@slider
+thresh_lin = 10^(slider1/20);
+out_coeff = 1 / ((slider2 / 1000) * srate);
+in_coeff = 1 / ((slider3 / 1000) * srate);
+max_idle_samples = (slider5 / 1000) * srate;
+delay_samples = (slider6 / 1000) * srate;
+
+@sample
+s_peak = max(abs(spl2), abs(spl3));
+env_detector = s_peak > env_detector ? s_peak : env_detector * env_attack + s_peak * (1-env_attack);
+meter_hold = max(s_peak, meter_hold * 0.9995);
+meter_db = 20 * log10(max(meter_hold, 0.000001));
+
+// LOGIC
+(env_detector > thresh_lin) ? (
+  target = 0; ready_to_roll = 1; idle_counter = 0; delay_counter = 0; in_delay_phase = 0;
+) : (
+  (ready_to_roll) ? (
+    will_fill = (rand(100) < slider4) ? 1 : 0;
+    will_fill ? (in_delay_phase = 1; delay_counter = 0;) : (state = 0;);
+    ready_to_roll = 0;
+  );
+  (in_delay_phase) ? (
+    delay_counter += 1;
+    (delay_counter >= delay_samples) ? (state = 1; in_delay_phase = 0;);
+  ) : (
+    (state == 0 && slider5 > 0) ? (
+      idle_counter += 1;
+      (idle_counter >= max_idle_samples) ? (in_delay_phase = 1; idle_counter = 0;);
+    );
+  );
+  target = state;
+);
+
+// ENVELOPE
+(envelope < target) ? (
+  envelope += in_coeff; (envelope > target) ? envelope = target;
+) : (
+  envelope -= out_coeff; (envelope < 0) ? envelope = 0;
+);
+
+spl0 *= envelope; spl1 *= envelope;
+spl2 = 0; spl3 = 0;
+
+@gfx 450 150
+function db_to_y(db) ( ((db + 60) / 60) * m_h; );
+
+// --- ROUTING INFO ---
+gfx_r=0.5; gfx_g=0.5; gfx_b=0.5; gfx_a=1;
+gfx_x=20; gfx_y=110;
+gfx_drawstr("Routing: 1-2 Accompanist | 3-4 Soloist");
+
+// --- MONITOR ---
+m_x = 380; m_y = 25; m_w = 20; m_h = 75;
+gfx_r=0.1; gfx_g=0.1; gfx_b=0.1; gfx_rect(m_x, m_y, m_w, m_h);
+v_y = min(m_h, max(0, db_to_y(meter_db)));
+gfx_r=0.2; gfx_g=0.6; gfx_b=1; gfx_rect(m_x+1, m_y+m_h-v_y, m_w-2, v_y);
+th_y_pos = m_y + m_h - db_to_y(slider1);
+gfx_r=1; gfx_g=1; gfx_b=1; gfx_line(m_x-5, th_y_pos, m_x+m_w+5, th_y_pos);
+gfx_x=m_x-10; gfx_y=m_y+m_h+8; gfx_drawstr("SOLOIST");
+
+// --- STATUS ---
+gfx_x=20; gfx_y=20; gfx_r=0.8; gfx_g=0.8; gfx_b=0.8;
+gfx_drawstr("Current Status:");
+gfx_y+=25; gfx_x=25;
+(env_detector > thresh_lin) ? (
+  gfx_r=1; gfx_g=0.3; gfx_b=0.3; gfx_drawstr("SOLOIST ACTIVE (Ducking)");
+) : (
+  in_delay_phase ? (
+    gfx_r=1; gfx_g=0.8; gfx_b=0; 
+    gfx_printf("PREPARING ENTRY (%d ms)", (delay_samples - delay_counter) / srate * 1000);
+  ) : (
+    state ? (gfx_r=0.4; gfx_g=1; gfx_b=0.4; gfx_drawstr("ACCOMPANIST FILLING");) : 
+            (gfx_r=0.6; gfx_g=0.6; gfx_b=0.6; gfx_drawstr("IDLE / WAITING"););
+  );
+);

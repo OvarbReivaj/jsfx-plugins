@@ -1,0 +1,128 @@
+desc:  JB-Brightness tracker
+author: Javier Bravo
+about:
+  JB-Brightness Tracker is a real-time spectral analyzer that converts audio timbre 
+  and dynamics into MIDI data. It uses FFT analysis to track the "brightness" 
+  of a signal and an envelope follower for its "intensity."
+  
+  Key Features:
+  - Spectral Tracking: Maps audio brightness to MIDI CC and MIDI Note pitch.
+  - Dual Output: Generates MIDI CC for both Brightness (timbre) and Intensity (volume).
+  - Smart Triggering: Includes a threshold and sensitivity-based note trigger 
+    to play MIDI notes dynamically based on performance attacks.
+  - Calibration: Adjustable Min/Max range (Tasto/Ponticello) to adapt to different 
+    instruments or playing styles.
+  - Smoothing: Independent attack/release smoothing for stable, jitter-free control of CC.
+  - Visual Feedback: Real-time GUI monitors for signal tracking and trigger status.
+
+// --- SLIDERS ---
+slider1:0.1<0,1,0.01>Input Brightness Min (Tasto)
+slider2:0.6<0,1,0.01>Input Brightness Max (Ponticello)
+slider3:0.85<0,0.99,0.01>Brightness Smooth (0=Fast, 0.99=Slow)
+slider4:0.90<0,0.99,0.01>Intensity Smooth (0=Fast, 0.99=Slow)
+
+slider6:1<0,16,1>MIDI CC Channel (0=Off)
+slider7:20<1,127,1>Brightness CC Number
+slider8:21<1,127,1>Intensity CC Number
+
+slider10:-45<-100,0,1>Detection Threshold (dB)
+slider11:1.5<1,4,0.1>Attack Sensitivity (Ratio)
+slider12:50<10,500,10>Retrigger Filter (ms)
+slider13:100<10,2000,10>Note Duration (ms)
+slider14:0<0,1,1{Off,On}>Enable MIDI Notes
+slider15:36<0,127,1>Min MIDI Note (Dark)
+slider16:48<0,127,1>Max MIDI Note (Bright)
+
+@init
+fftsize = 1024; pos = 0; buf_input = 0; fft_workspace = 2048;
+last_trigger_time = 0; note_is_on = 0; off_time = 0;
+s_bright = 0; s_env = 0; 
+
+@sample
+in = (spl0 + spl1) * 0.5;
+buf_input[pos] = in;
+pos += 1;
+abs(in) > peak_sample ? peak_sample = abs(in);
+
+// Lógica de Note Off
+note_is_on && time_precise() >= off_time ? (
+  midisend(0, $x80, playing_note, 0);
+  note_is_on = 0;
+);
+
+pos >= fftsize ? (
+  // 1. INTENSIDAD (ENVELOPE FOLLOWER)
+  db_val = 20 * log10(peak_sample + 0.00001);
+  norm_env = min(1, max(0, (db_val + 60) / 60));
+  s_env = s_env * slider4 + norm_env * (1 - slider4); // Suavizado
+  
+  // 2. ANÁLISIS ESPECTRAL
+  i = 0; loop(fftsize, fft_workspace[i*2] = buf_input[i]; fft_workspace[i*2+1] = 0; i += 1; );
+  fft(fft_workspace, fftsize);
+  fft_permute(fft_workspace, fftsize);
+  
+  i = 0; sum_mag = 0; sum_weighted_mag = 0;
+  loop(fftsize / 2,
+    mag = sqrt(fft_workspace[i*2]^2 + fft_workspace[i*2+1]^2);
+    sum_mag += mag; sum_weighted_mag += mag * i;
+    i += 1;
+  );
+  
+  sum_mag > 0 ? (
+    raw_b = sum_weighted_mag / (sum_mag * (fftsize/2));
+    calibrated_b = min(1, max(0, (raw_b - slider1) / (slider2 - slider1)));
+    s_bright = s_bright * slider3 + calibrated_b * (1 - slider3);
+    
+    // ENVÍO DE SEÑAL CONTINUA (CC)
+    slider6 > 0 ? (
+      midisend(0, $xB0 | (slider6-1), slider7, floor(s_bright * 127));
+      midisend(0, $xB0 | (slider6-1), slider8, floor(s_env * 127));
+    );
+  );
+
+  // 3. LÓGICA DE DISPARO (TRIGGER)
+  can_trigger = (time_precise() - last_trigger_time) > (slider12 / 1000);
+  threshold_linear = 10 ^ (slider10 / 20);
+  
+  slider14 && peak_sample > threshold_linear && peak_sample > prev_peak * slider11 && can_trigger ? (
+     note_is_on ? midisend(0, $x80, playing_note, 0);
+     note_range = slider16 - slider15;
+     playing_note = floor(slider15 + (s_bright * note_range));
+     
+     // MEJORA DE VELOCITY: Usamos raíz cuadrada para compensar la escala lineal
+     // Esto hace que las notas suenen con más cuerpo incluso en ejecuciones suaves.
+     vel = floor(sqrt(peak_sample) * 127);
+     vel = min(127, max(10, vel)); // Aseguramos un mínimo de 10 para que sea audible
+     
+     midisend(0, $x90, playing_note, vel);
+     
+     last_trigger_time = time_precise();
+     off_time = time_precise() + (slider13 / 1000);
+     note_is_on = 1;
+  );
+  
+  prev_peak = peak_sample;
+  peak_sample = 0;
+  pos = 0;
+);
+
+@gfx 450 250
+gfx_setfont(1, "Arial", 15, 'b');
+gfx_r=1; gfx_g=0.6; gfx_b=0.2; gfx_x=20; gfx_y=20;
+gfx_drawstr("JB-BRIGHTNESS TRACKER - JAVIER BRAVO");
+
+// Monitores de señales suavizadas
+gfx_r=1; gfx_g=1; gfx_b=1;
+gfx_x=20; gfx_y=60; gfx_drawstr("Brightness (Orange): "); gfx_drawnumber(s_bright, 3);
+gfx_x=20; gfx_y=85; gfx_drawstr("Intensity (Blue): "); gfx_drawnumber(s_env, 3);
+
+// Barras de visualización
+gfx_r=0.2; gfx_g=0.2; gfx_b=0.2; gfx_rect(20, 110, 410, 20);
+gfx_r=1; gfx_g=0.5; gfx_b=0; gfx_rect(20, 110, s_bright * 410, 20);
+
+gfx_r=0.2; gfx_g=0.2; gfx_b=0.2; gfx_rect(20, 140, 410, 20);
+gfx_r=0.2; gfx_g=0.7; gfx_b=1; gfx_rect(20, 140, s_env * 410, 20);
+
+// Status de Trigger
+gfx_x=20; gfx_y=180;
+note_is_on ? (gfx_r=0; gfx_g=1; gfx_b=0; gfx_drawstr("MIDI NOTE ACTIVE");) : (gfx_r=0.5; gfx_g=0.5; gfx_b=0.5; gfx_drawstr("WAITING TRIGGER..."););

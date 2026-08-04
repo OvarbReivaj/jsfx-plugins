@@ -1,0 +1,140 @@
+desc: JB High-Fidelity Transient Slicer (40s Buffer / 500 Slices)
+
+slider1:0<0,1,1{Off,Recording...}>REC Mode
+slider2:0<0,1,1{Stopped,Playing...}>PLAY Mode
+slider3:-24<-60,0,1>Threshold (dB)
+slider4:180<50,1000,10>Retrigger (ms)
+slider5:0<0,2,1{Up, Down, Random}>Playback Order
+slider6:50<0,100,1>Reverse Probability (%)
+slider7:0<0,1,0.001>Gap between Slices (s)
+slider8:0<0,12,0.1>Pitch Rand Range (Semitones)
+slider9:0<0,1,0.01>Pan Randomness
+slider10:1<0,2,0.05>Output Gain
+
+@init
+// --- Memory Allocation ---
+freemem = 0;
+v_size = srate * 40; // Ajustado a 40 Segundos
+audio_buf = freemem; freemem += v_size;
+
+max_slices = 500; 
+slices = freemem; freemem += (max_slices * 2); 
+
+num_slices = 0;
+write_ptr = 0;
+play_ptr = 0;
+current_slice = 0;
+gap_timer = 0;
+t_count = 0;
+last_s1 = 0;
+
+@slider
+thresh = 10^(slider3/20);
+retrigger_s = (slider4 / 1000) * srate;
+rev_prob = slider6 / 100;
+
+// Reset al iniciar grabación
+(slider1 == 1 && last_s1 == 0) ? (
+  num_slices = 0;
+  write_ptr = 0;
+  t_count = 0;
+  memset(audio_buf, 0, v_size);
+);
+
+@block
+while (midirecv(offset, msg1, msg2, msg3)) (
+  status = msg1 & $xF0;
+  (status == $xB0 && msg2 == 64) ? (
+     slider1 = (msg3 > 0);
+     (slider1 == 1) ? (num_slices = 0; write_ptr = 0; memset(audio_buf, 0, v_size););
+  );
+  (status == $xB0 && msg2 == 65) ? slider2 = (msg3 > 0);
+  midisend(offset, msg1, msg2, msg3);
+);
+
+@sample
+inL = spl0; inR = spl1;
+t_count += 1;
+
+// --- MOTOR DE GRABACIÓN ---
+(slider1 == 1) ? (
+  // Audio original sin alterar
+  audio_buf[write_ptr] = (inL + inR) * 0.5;
+  
+  // Procesado de detección (Sidechain interno comprimido)
+  det_sig = abs(inL + inR) * 0.5;
+  det_sig = (det_sig * 2) / (1 + det_sig); // Compresión para igualar ataques
+  
+  // Detección de transientes
+  (det_sig > thresh && t_count > retrigger_s) ? (
+    (num_slices < max_slices) ? (
+      (num_slices > 0) ? slices[(num_slices-1)*2 + 1] = write_ptr;
+      slices[num_slices*2] = write_ptr;
+      num_slices += 1;
+      t_count = 0;
+    );
+  );
+  
+  write_ptr += 1;
+  (write_ptr >= v_size) ? slider1 = 0; 
+);
+
+(last_s1 == 1 && slider1 == 0) ? (
+  (num_slices > 0) ? slices[(num_slices-1)*2 + 1] = write_ptr;
+);
+last_s1 = slider1;
+
+// --- MOTOR DE REPRODUCCIÓN (Interpolación Lineal) ---
+outL = outR = 0;
+(slider2 == 1 && num_slices > 0) ? (
+  (gap_timer > 0) ? (
+    gap_timer -= 1;
+  ) : (
+    (play_ptr == 0) ? (
+       (slider5 == 0) ? current_slice = (current_slice + 1) % num_slices;
+       (slider5 == 1) ? current_slice = (current_slice - 1 + num_slices) % num_slices;
+       (slider5 == 2) ? current_slice = rand(num_slices) | 0;
+       
+       s_start = slices[current_slice*2];
+       s_end = slices[current_slice*2 + 1];
+       s_len = s_end - s_start;
+       
+       is_rev = (rand(1) < rev_prob);
+       pitch_f = 2^( (rand(slider8*2)-slider8) / 12 ); 
+       play_ptr = is_rev ? s_len : 1;
+       
+       p_rand = (rand(2)-1) * slider9;
+       panL = 0.5 - (p_rand * 0.5); panR = 0.5 + (p_rand * 0.5);
+    );
+
+    s_start = slices[current_slice*2];
+    s_len = slices[current_slice*2 + 1] - s_start;
+    
+    // Lectura con Interpolación Lineal
+    real_pos = s_start + play_ptr;
+    pos_floor = real_pos | 0;
+    pos_frac = real_pos - pos_floor;
+    
+    sampleA = audio_buf[pos_floor % v_size];
+    sampleB = audio_buf[(pos_floor + 1) % v_size];
+    sig = sampleA + pos_frac * (sampleB - sampleA);
+    
+    // Envolvente Anti-click
+    fade = 400; window = 1;
+    (play_ptr < fade) ? window = play_ptr / fade;
+    (is_rev ? (play_ptr < fade) : (play_ptr > s_len - fade)) ? window = (is_rev ? play_ptr : (s_len - play_ptr)) / fade;
+
+    outL = sig * panL * window;
+    outR = sig * panR * window;
+
+    is_rev ? play_ptr -= pitch_f : play_ptr += pitch_f;
+
+    (is_rev ? play_ptr <= 0 : play_ptr >= s_len) ? (
+      play_ptr = 0;
+      gap_timer = slider7 * srate;
+    );
+  );
+);
+
+spl0 = inL + (outL * slider10);
+spl1 = inR + (outR * slider10);
